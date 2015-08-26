@@ -74,22 +74,21 @@ gen_Generic_binds gk tc metaTyCons mod = do
 genGenericMetaTyCons :: TyCon -> Module -> TcM (MetaTyCons, BagDerivStuff)
 genGenericMetaTyCons tc mod =
   do  loc <- getSrcSpanM
-      let
-        tc_name   = tyConName tc
-        tc_cons   = tyConDataCons tc
-        tc_arits  = map dataConSourceArity tc_cons
+      let tc_name   = tyConName tc
+      tc_rep_name <- newTyConRepName tc_name
+      let tc_cons   = tyConDataCons tc
+          tc_arits  = map dataConSourceArity tc_cons
+          tc_occ    = nameOccName tc_name
+          d_occ     = mkGenD tc_occ
+          c_occ m   = mkGenC tc_occ m
+          s_occ m n = mkGenS tc_occ m n
 
-        tc_occ    = nameOccName tc_name
-        d_occ     = mkGenD tc_occ
-        c_occ m   = mkGenC tc_occ m
-        s_occ m n = mkGenS tc_occ m n
-
-        mkTyCon name = ASSERT( isExternalName name )
-                       buildAlgTyCon name [] [] Nothing [] distinctAbstractTyConRhs
-                                          NonRecursive
-                                          False          -- Not promotable
-                                          False          -- Not GADT syntax
-                                          NoParentTyCon
+          mkTyCon name = ASSERT( isExternalName name )
+                         buildAlgTyCon name [] [] Nothing [] distinctAbstractTyConRhs
+                                            NonRecursive
+                                            False          -- Not promotable
+                                            False          -- Not GADT syntax
+                                            (VanillaAlgTyCon tc_rep_name)
 
       d_name  <- newGlobalBinder mod d_occ loc
       c_names <- forM (zip [0..] tc_cons) $ \(m,_) ->
@@ -268,10 +267,9 @@ canDoGenerics tc tc_args
   where
     -- The tc can be a representation tycon. When we want to display it to the
     -- user (in an error message) we should print its parent
-    (tc_name, tc_tys) = case tyConParent tc of
-        FamInstTyCon _ ptc tys -> (ppr ptc, hsep (map ppr
-                                            (tys ++ drop (length tys) tc_args)))
-        _                      -> (ppr tc, hsep (map ppr (tyConTyVars tc)))
+    (tc_name, tc_tys) = case tyConFamInst_maybe tc of
+        Just (ptc, tys) -> (ppr ptc, hsep (map ppr (tys ++ drop (length tys) tc_args)))
+        _               -> (ppr tc, hsep (map ppr (tyConTyVars tc)))
 
         -- Check (d) from Note [Requirements for deriving Generic and Rep].
         --

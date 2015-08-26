@@ -1372,6 +1372,20 @@ reifyCxt   = mapM reifyPred
 reifyFunDep :: ([TyVar], [TyVar]) -> TH.FunDep
 reifyFunDep (xs, ys) = TH.FunDep (map reifyName xs) (map reifyName ys)
 
+reifyFamFlavour :: TyCon -> TcM (Either TH.FamFlavour [TH.TySynEqn])
+reifyFamFlavour tc
+  | Just flav <- famTyConFlav_maybe tc = case flav of
+      OpenSynFamilyTyCon           -> return $ Left TH.TypeFam
+      DataFamilyTyCon {}           -> return $ Left TH.TypeFam
+      AbstractClosedSynFamilyTyCon -> return $ Right []
+      BuiltInSynFamTyCon _         -> return $ Right []
+      ClosedSynFamilyTyCon Nothing -> return $ Right []
+      ClosedSynFamilyTyCon (Just ax)
+        -> do { eqns <- brListMapM reifyAxBranch $ coAxiomBranches ax
+              ; return $ Right eqns }
+  | otherwise
+  = pprPanic "TcSplice.reifyFamFlavour: not a type family" (ppr tc)
+
 reifyTyVars :: [TyVar]
             -> TcM [TH.TyVarBndr]
 reifyTyVars tvs = mapM reify_tv $ filter isTypeVar tvs

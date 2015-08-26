@@ -206,11 +206,9 @@ basicKnownKeyNames
         -- Typeable
         typeableClassName,
         typeRepTyConName,
-        mkTyConName,
         mkPolyTyConAppName,
         mkAppTyName,
-        typeNatTypeRepName,
-        typeSymbolTypeRepName,
+        typeLitTypeRepName,
 
         -- Dynamic
         toDynName,
@@ -666,11 +664,6 @@ showString_RDR          = varQual_RDR gHC_SHOW (fsLit "showString")
 showSpace_RDR           = varQual_RDR gHC_SHOW (fsLit "showSpace")
 showParen_RDR           = varQual_RDR gHC_SHOW (fsLit "showParen")
 
-typeRep_RDR, mkTyCon_RDR, mkTyConApp_RDR :: RdrName
-typeRep_RDR       = varQual_RDR tYPEABLE_INTERNAL    (fsLit "typeRep#")
-mkTyCon_RDR       = varQual_RDR tYPEABLE_INTERNAL    (fsLit "mkTyCon")
-mkTyConApp_RDR    = varQual_RDR tYPEABLE_INTERNAL    (fsLit "mkTyConApp")
-
 undefined_RDR :: RdrName
 undefined_RDR = varQual_RDR gHC_ERR (fsLit "undefined")
 
@@ -762,6 +755,39 @@ and it's convenient to write them all down in one place.
 --MetaHaskell Extension  add the constrs and the lower case case
 -- guys as well (perhaps) e.g. see  trueDataConName     below
 -}
+
+-- | Build a 'Name' for the 'Typeable' representation of the given special 'TyCon'.
+-- Special 'TyCon's include @(->)@, @BOX@, @Constraint@, etc. See 'TysPrim'.
+mkSpecialTyConRepName :: FastString -> Name -> Name
+-- See Note [Grand plan for Typeable] in 'TcTypeable' in TcTypeable.
+mkSpecialTyConRepName fs tc_name
+  = mkExternalName (tyConRepNameUnique (nameUnique tc_name))
+                   tYPEABLE_INTERNAL
+                   (mkVarOccFS fs)
+                   wiredInSrcSpan
+
+-- | Make a 'Name' for the 'Typeable' representation of the given wired-in type
+mkPrelTyConRepName :: Name -> Name
+-- See Note [Grand plan for Typeable] in 'TcTypeable' in TcTypeable.
+mkPrelTyConRepName tc_name  -- Prelude tc_name is always External,
+                            -- so nameModule will work
+  = mkExternalName rep_uniq rep_mod rep_occ (nameSrcSpan tc_name)
+  where
+    name_occ  = nameOccName tc_name
+    name_mod  = nameModule  tc_name
+    name_uniq = nameUnique  tc_name
+    rep_uniq | isTcOcc name_occ = tyConRepNameUnique   name_uniq
+             | otherwise        = dataConRepNameUnique name_uniq
+    (rep_mod, rep_occ) = tyConRepModOcc name_mod name_occ
+
+-- | TODO
+-- See Note [Grand plan for Typeable] in 'TcTypeable' in TcTypeable.
+tyConRepModOcc :: Module -> OccName -> (Module, OccName)
+tyConRepModOcc tc_module tc_occ
+  | tc_module == gHC_TYPES
+  = (tYPEABLE_INTERNAL, mkTyConRepUserOcc tc_occ)
+  | otherwise
+  = (tc_module,         mkTyConRepSysOcc tc_occ)
 
 wildCardName :: Name
 wildCardName = mkSystemVarName wildCardKey (fsLit "wild")
@@ -1023,19 +1049,23 @@ ixClassName = clsQual gHC_ARR (fsLit "Ix") ixClassKey
 -- Class Typeable, and functions for constructing `Typeable` dictionaries
 typeableClassName
   , typeRepTyConName
-  , mkTyConName
+  , trTyConDataConName
+  , trModuleDataConName
+  , trNameSDataConName
   , mkPolyTyConAppName
   , mkAppTyName
-  , typeNatTypeRepName
-  , typeSymbolTypeRepName
+  , typeRepIdName
+  , typeLitTypeRepName
   :: Name
 typeableClassName     = clsQual tYPEABLE_INTERNAL (fsLit "Typeable")       typeableClassKey
 typeRepTyConName      = tcQual  tYPEABLE_INTERNAL (fsLit "TypeRep")        typeRepTyConKey
-mkTyConName           = varQual tYPEABLE_INTERNAL (fsLit "mkTyCon")        mkTyConKey
+trTyConDataConName    = dcQual  gHC_TYPES         (fsLit "TyCon")          trTyConDataConKey
+trModuleDataConName   = dcQual  gHC_TYPES         (fsLit "Module")         trModuleDataConKey
+trNameSDataConName    = dcQual  gHC_TYPES         (fsLit "TrNameS")        trNameSDataConKey
+typeRepIdName         = varQual tYPEABLE_INTERNAL (fsLit "typeRep#")       typeRepIdKey
 mkPolyTyConAppName    = varQual tYPEABLE_INTERNAL (fsLit "mkPolyTyConApp") mkPolyTyConAppKey
 mkAppTyName           = varQual tYPEABLE_INTERNAL (fsLit "mkAppTy")        mkAppTyKey
-typeNatTypeRepName    = varQual tYPEABLE_INTERNAL (fsLit "typeNatTypeRep") typeNatTypeRepKey
-typeSymbolTypeRepName = varQual tYPEABLE_INTERNAL (fsLit "typeSymbolTypeRep") typeSymbolTypeRepKey
+typeLitTypeRepName    = varQual tYPEABLE_INTERNAL (fsLit "typeLitTypeRep") typeLitTypeRepKey
 
 
 -- Dynamic
@@ -1628,6 +1658,11 @@ srcLocDataConKey                        = mkPreludeDataConUnique 37
 ipDataConKey :: Unique
 ipDataConKey                            = mkPreludeDataConUnique 38
 
+trTyConDataConKey, trModuleDataConKey, trNameSDataConKey :: Unique
+trTyConDataConKey                       = mkPreludeDataConUnique 185
+trModuleDataConKey                      = mkPreludeDataConUnique 186
+trNameSDataConKey                       = mkPreludeDataConUnique 187
+
 {-
 ************************************************************************
 *                                                                      *
@@ -1889,18 +1924,18 @@ proxyHashKey = mkPreludeMiscIdUnique 502
 mkTyConKey
   , mkPolyTyConAppKey
   , mkAppTyKey
-  , typeNatTypeRepKey
-  , typeSymbolTypeRepKey
+  , typeLitTypeRepKey
+  , typeRepIdKey
   :: Unique
 mkTyConKey            = mkPreludeMiscIdUnique 503
 mkPolyTyConAppKey     = mkPreludeMiscIdUnique 504
 mkAppTyKey            = mkPreludeMiscIdUnique 505
-typeNatTypeRepKey     = mkPreludeMiscIdUnique 506
-typeSymbolTypeRepKey  = mkPreludeMiscIdUnique 507
+typeLitTypeRepKey     = mkPreludeMiscIdUnique 506
+typeRepIdKey          = mkPreludeMiscIdUnique 508
 
 -- Dynamic
 toDynIdKey :: Unique
-toDynIdKey = mkPreludeMiscIdUnique 508
+toDynIdKey            = mkPreludeMiscIdUnique 509
 
 {-
 ************************************************************************

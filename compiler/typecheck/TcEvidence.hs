@@ -730,24 +730,30 @@ data EvTerm
   | EvLit EvLit       -- Dictionary for KnownNat and KnownSymbol classes.
                       -- Note [KnownNat & KnownSymbol and EvLit]
 
-  | EvCallStack EvCallStack -- Dictionary for CallStack implicit parameters
+  | EvCallStack EvCallStack      -- Dictionary for CallStack implicit parameters
 
-  | EvTypeable EvTypeable   -- Dictionary for `Typeable`
+  | EvTypeable Type EvTypeable   -- Dictionary for (Typeable ty)
 
   deriving( Data.Data, Data.Typeable )
 
 
 -- | Instructions on how to make a 'Typeable' dictionary.
+-- See Note [Typeable evidence terms]
 data EvTypeable
-  = EvTypeableTyCon TyCon [Kind]
-    -- ^ Dictionary for concrete type constructors.
+  = EvTypeableTyCon [EvTerm]
+    -- ^ Dictionary for @Typeable (T k1..kn t1..tn)@
+    -- The EvTerms are for the type args (but not the kind args)
+    -- We do not (yet) have dictionaries for kinds, (Typeable k)
 
-  | EvTypeableTyApp (EvTerm,Type) (EvTerm,Type)
-    -- ^ Dictionary for type applications;  this is used when we have
-    -- a type expression starting with a type variable (e.g., @Typeable (f a)@)
+  | EvTypeableTyApp EvTerm EvTerm
+    -- ^ Dictionary for @Typeable (s t)@,
+    -- given a dictionaries for @s@ and @t@
 
-  | EvTypeableTyLit (EvTerm,Type)
-    -- ^ Dictionary for a type literal.
+  | EvTypeableTyLit EvTerm
+    -- ^ Dictionary for a type literal,
+    -- e.g. @Typeable "foo"@ or @Typeable 3@
+    -- The 'EvTerm' is evidence of, e.g., @KnownNat 3@
+    -- (see Trac #10348)
 
   deriving ( Data.Data, Data.Typeable )
 
@@ -769,6 +775,19 @@ data EvCallStack
   deriving( Data.Data, Data.Typeable )
 
 {-
+Note [Typeable evidence terms]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The EvTypeable data type looks isomorphic to Type, but the EvTerms
+inside can be EvIds.  Eg
+    f :: forall a. Typeable a => a -> TypeRep
+    f x = typeRep (undefined :: Proxy [a])
+Here for the (Typeable [a]) dictionary passed to typeRep we make
+evidence
+    dl :: Typeable [a] = EvTypeable [a] (EvTypeableTyCon [EvId d]
+where
+    d :: Typable a
+is the lambda-bound dictionary passed into f.
+
 Note [Coercion evidence terms]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A "coercion evidence term" takes one of these forms
@@ -1009,7 +1028,7 @@ evVarsOfTerm (EvCast tm co)       = evVarsOfTerm tm `unionVarSet` coVarsOfTcCo c
 evVarsOfTerm (EvDelayedError _ _) = emptyVarSet
 evVarsOfTerm (EvLit _)            = emptyVarSet
 evVarsOfTerm (EvCallStack cs)     = evVarsOfCallStack cs
-evVarsOfTerm (EvTypeable ev)      = evVarsOfTypeable ev
+evVarsOfTerm (EvTypeable _ ev)    = evVarsOfTypeable ev
 
 evVarsOfTerms :: [EvTerm] -> VarSet
 evVarsOfTerms = mapUnionVarSet evVarsOfTerm
@@ -1023,9 +1042,9 @@ evVarsOfCallStack cs = case cs of
 evVarsOfTypeable :: EvTypeable -> VarSet
 evVarsOfTypeable ev =
   case ev of
-    EvTypeableTyCon _ _    -> emptyVarSet
-    EvTypeableTyApp e1 e2  -> evVarsOfTerms (map fst [e1,e2])
-    EvTypeableTyLit e      -> evVarsOfTerm (fst e)
+    EvTypeableTyCon es    -> evVarsOfTerms es
+    EvTypeableTyApp e1 e2 -> evVarsOfTerms [e1,e2]
+    EvTypeableTyLit e     -> evVarsOfTerm e
 
 {-
 ************************************************************************
@@ -1091,7 +1110,7 @@ instance Outputable EvTerm where
   ppr (EvCallStack cs)      = ppr cs
   ppr (EvDelayedError ty msg) =     ptext (sLit "error")
                                 <+> sep [ char '@' <> ppr ty, ppr msg ]
-  ppr (EvTypeable ev)    = ppr ev
+  ppr (EvTypeable _ ev) = ppr ev
 
 instance Outputable EvLit where
   ppr (EvNum n) = integer n
@@ -1108,9 +1127,9 @@ instance Outputable EvCallStack where
 instance Outputable EvTypeable where
   ppr ev =
     case ev of
-      EvTypeableTyCon tc ks    -> parens (ppr tc <+> sep (map ppr ks))
-      EvTypeableTyApp t1 t2    -> parens (ppr (fst t1) <+> ppr (fst t2))
-      EvTypeableTyLit x        -> ppr (fst x)
+      EvTypeableTyCon  ks    -> parens (ptext (sLit "TC") <+> sep (map ppr ks))
+      EvTypeableTyApp t1 t2  -> parens (ppr t1 <+> ppr t2)
+      EvTypeableTyLit t1     -> ptext (sLit "TyLit") <> ppr t1
 
 
 ----------------------------------------------------------------------

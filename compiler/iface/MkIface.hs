@@ -1670,7 +1670,7 @@ tyConToIfaceDecl env tycon
                   ifCons    = ifaceConDecls (algTyConRhs tycon),
                   ifRec     = boolToRecFlag (isRecursiveTyCon tycon),
                   ifGadtSyntax = isGadtSyntaxTyCon tycon,
-                  ifPromotable = isJust (promotableTyCon_maybe tycon),
+                  ifPromotable = isPromotableTyCon tycon,
                   ifParent  = parent })
 
   | otherwise  -- FunTyCon, PrimTyCon, promoted TyCon/DataCon
@@ -1708,16 +1708,13 @@ tyConToIfaceDecl env tycon
             axn  = coAxiomName ax
     to_if_fam_flav (ClosedSynFamilyTyCon Nothing)
       = IfaceClosedSynFamilyTyCon Nothing
-    to_if_fam_flav AbstractClosedSynFamilyTyCon
-      = IfaceAbstractClosedSynFamilyTyCon
-
-    to_if_fam_flav (BuiltInSynFamTyCon {})
-      = IfaceBuiltInSynFamTyCon
+    to_if_fam_flav AbstractClosedSynFamilyTyCon = IfaceAbstractClosedSynFamilyTyCon
+    to_if_fam_flav (DataFamilyTyCon {})         = IfaceDataFamilyTyCon
+    to_if_fam_flav (BuiltInSynFamTyCon {})      = IfaceBuiltInSynFamTyCon
 
 
     ifaceConDecls (NewTyCon { data_con = con })     = IfNewTyCon  (ifaceConDecl con)
     ifaceConDecls (DataTyCon { data_cons = cons })  = IfDataTyCon (map ifaceConDecl cons)
-    ifaceConDecls (DataFamilyTyCon {})              = IfDataFamTyCon
     ifaceConDecls (TupleTyCon { data_con = con })   = IfDataTyCon [ifaceConDecl con]
     ifaceConDecls (AbstractTyCon distinct)          = IfAbstractTyCon distinct
         -- The AbstractTyCon case happens when a TyCon has been trimmed

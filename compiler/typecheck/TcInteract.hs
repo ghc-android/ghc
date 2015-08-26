@@ -14,12 +14,13 @@ import TcCanonical
 import TcFlatten
 import VarSet
 import Type
-import Kind ( isKind )
+import Kind ( isKind, isConstraintKind )
 import InstEnv( DFunInstType, lookupInstEnv, instanceDFunId )
-import CoAxiom(sfInteractTop, sfInteractInert)
+import CoAxiom( sfInteractTop, sfInteractInert )
 
 import Var
 import TcType
+import Name
 import PrelNames ( knownNatClassName, knownSymbolClassName,
                    callStackTyConKey, typeableClassName )
 import TysWiredIn ( ipClass, typeNatKind, typeSymbolKind )
@@ -743,11 +744,11 @@ addFunDepWork inerts work_ev cls
                                                             inert_pred inert_loc }
 
 {-
-*********************************************************************************
-*                                                                               *
+**********************************************************************
+*                                                                    *
                    Implicit parameters
-*                                                                               *
-*********************************************************************************
+*                                                                    *
+**********************************************************************
 -}
 
 interactGivenIP :: InertCans -> Ct -> TcS (StopOrContinue Ct)
@@ -769,6 +770,26 @@ interactGivenIP inerts workItem@(CDictCan { cc_ev = ev, cc_class = cls
     is_this_ip _ = False
 
 interactGivenIP _ wi = pprPanic "interactGivenIP" (ppr wi)
+
+-- | Is the constraint for an implicit CallStack parameter?
+-- i.e.   (IP "name" CallStack)
+isCallStackIP :: CtLoc -> Class -> [Type] -> Maybe (EvTerm -> EvCallStack)
+isCallStackIP loc cls tys
+  | cls `hasKey` ipClassNameKey
+  , [_ip_name, ty] <- tys
+  , Just (tc, _) <- splitTyConApp_maybe ty
+  , tc `hasKey` callStackTyConKey
+  = occOrigin (ctLocOrigin loc)
+  | otherwise
+  = Nothing
+  where
+    locSpan = ctLocSpan loc
+
+    -- We only want to grab constraints that arose due to the use of an IP or a
+    -- function call. See Note [Overview of implicit CallStacks]
+    occOrigin (OccurrenceOf n) = Just (EvCsPushCall n locSpan)
+    occOrigin (IPOccOrigin n)  = Just (EvCsTop ('?' `consFS` hsIPNameFS n) locSpan)
+    occOrigin _                = Nothing
 
 {-
 Note [Shadowing of Implicit Parameters]
@@ -821,11 +842,11 @@ I can think of two ways to fix this:
      error if we get multiple givens for the same implicit parameter.
 
 
-*********************************************************************************
-*                                                                               *
+**********************************************************************
+*                                                                    *
                    interactFunEq
-*                                                                               *
-*********************************************************************************
+*                                                                    *
+**********************************************************************
 -}
 
 interactFunEq :: InertCans -> Ct -> TcS (StopOrContinue Ct)
@@ -1056,11 +1077,11 @@ The second is the right thing to do.  Hence the isMetaTyVarTy
 test when solving pairwise CFunEqCan.
 
 
-*********************************************************************************
-*                                                                               *
+**********************************************************************
+*                                                                    *
                    interactTyVarEq
-*                                                                               *
-*********************************************************************************
+*                                                                    *
+**********************************************************************
 -}
 
 interactTyVarEq :: InertCans -> Ct -> TcS (StopOrContinue Ct)
@@ -1233,11 +1254,11 @@ emitFunDepDeriveds fd_eqns
          Pair (Type.substTy subst ty1) (Type.substTy subst ty2)
 
 {-
-*********************************************************************************
-*                                                                               *
+**********************************************************************
+*                                                                    *
                        The top-reaction Stage
-*                                                                               *
-*********************************************************************************
+*                                                                    *
+**********************************************************************
 -}
 
 topReactionsStage :: WorkItem -> TcS (StopOrContinue Ct)
@@ -1716,6 +1737,12 @@ So the inner binding for ?x::Bool *overrides* the outer one.
 Hence a work-item Given overrides an inert-item Given.
 -}
 
+{- *******************************************************************
+*                                                                    *
+                       Class lookup
+*                                                                    *
+**********************************************************************-}
+
 -- | Indicates if Instance met the Safe Haskell overlapping instances safety
 -- check.
 --
@@ -1907,53 +1934,36 @@ Other notes:
   constraint solving.
 -}
 
--- | Is the constraint for an implicit CallStack parameter?
--- i.e.   (IP "name" CallStack)
-isCallStackIP :: CtLoc -> Class -> [Type] -> Maybe (EvTerm -> EvCallStack)
-isCallStackIP loc cls tys
-  | cls == ipClass
-  , [_ip_name, ty] <- tys
-  , Just (tc, _) <- splitTyConApp_maybe ty
-  , tc `hasKey` callStackTyConKey
-  = occOrigin (ctLocOrigin loc)
-  | otherwise
-  = Nothing
-  where
-    locSpan = ctLocSpan loc
 
-    -- We only want to grab constraints that arose due to the use of an IP or a
-    -- function call. See Note [Overview of implicit CallStacks]
-    occOrigin (OccurrenceOf n) = Just (EvCsPushCall n locSpan)
-    occOrigin (IPOccOrigin n)  = Just (EvCsTop ('?' `consFS` hsIPNameFS n) locSpan)
-    occOrigin _                = Nothing
+{- ********************************************************************
+*                                                                     *
+                   Class lookup for Typeable
+*                                                                     *
+***********************************************************************-}
 
 -- | Assumes that we've checked that this is the 'Typeable' class,
 -- and it was applied to the correct argument.
 matchTypeableClass :: Class -> Kind -> Type -> TcS LookupInstResult
 matchTypeableClass clas k t
-
-  -- See Note [No Typeable for qualified types]
-  | isForAllTy t                               = return NoInstance
-
-  -- Is the type of the form `C => t`?
-  | isJust (tcSplitPredFunTy_maybe t)          = return NoInstance
-
-  | eqType k typeNatKind                       = doTyLit knownNatClassName
-  | eqType k typeSymbolKind                    = doTyLit knownSymbolClassName
-
-  | Just (tc, ks) <- splitTyConApp_maybe t
-  , all isKind ks                              = doTyCon tc ks
-
-  | Just (f,kt)       <- splitAppTy_maybe t    = doTyApp f kt
-  | otherwise                                  = return NoInstance
-
+  | isForAllTy k                            = return NoInstance
+  | isConstraintKind k                      = return NoInstance
+  | Just _ <- isNumLitTy t                  = doTyLit knownNatClassName
+  | Just _ <- isStrLitTy t                  = doTyLit knownSymbolClassName
+  | Just (tc, kts) <- splitTyConApp_maybe t = doTyConApp tc kts
+  | Just (f,kt)   <- splitAppTy_maybe t     = doTyApp f kt
+  | otherwise                               = return NoInstance
   where
   -- Representation for type constructor applied to some kinds
-  doTyCon tc ks =
-    case mapM kindRep ks of
-      Nothing    -> return NoInstance
-      Just kReps ->
-        return $ GenInst [] (\_ -> EvTypeable (EvTypeableTyCon tc kReps) ) True
+  doTyConApp :: TyCon -> [KindOrType] -> TcS LookupInstResult
+  doTyConApp tc kts
+    | (ks, ts) <- splitTyConArgs tc kts
+    , all is_ground_kind ks
+    = return $ GenInst (map mk_typeable_pred ts)
+                       (\tReps -> EvTypeable t $ EvTypeableTyCon
+                                  (map EvId tReps))
+                       True
+    | otherwise
+    = return NoInstance
 
   {- Representation for an application of a type to a type-or-kind.
   This may happen when the type expression starts with a type variable.
@@ -1963,30 +1973,37 @@ matchTypeableClass clas k t
     (Typeable f, Typeable Int, Typeable Char)  --> (after some simp. steps)
     Typeable f
   -}
+  doTyApp :: Type -> KindOrType -> TcS LookupInstResult
   doTyApp f tk
     | isKind tk
     = return NoInstance -- We can't solve until we know the ctr.
     | otherwise
     = return $ GenInst [mk_typeable_pred f, mk_typeable_pred tk]
-                       (\[t1,t2] -> EvTypeable $ EvTypeableTyApp (EvId t1,f) (EvId t2,tk))
+                       (\[t1,t2] -> EvTypeable t $ EvTypeableTyApp (EvId t1) (EvId t2))
                        True
 
   -- Representation for concrete kinds.  We just use the kind itself,
   -- but first check to make sure that it is "simple" (i.e., made entirely
   -- out of kind constructors).
-  kindRep ki = do (_,ks) <- splitTyConApp_maybe ki
-                  mapM_ kindRep ks
-                  return ki
+  is_ground_kind k
+    | Just (_, ks) <- splitTyConApp_maybe k
+    = all is_ground_kind ks
+    | otherwise
+    = False
 
   -- Emit a `Typeable` constraint for the given type.
   mk_typeable_pred ty = mkClassPred clas [ typeKind ty, ty ]
 
-  -- Given KnownNat / KnownSymbol, generate appropriate sub-goal
-  -- and make evidence for a type-level literal.
+  -- Typeable is implied by KnownNat/KnownSymbol. In the case of a type literal
+  -- we generate a sub-goal for the appropriate class. See #10348 for what
+  -- happens when we fail to do this.
+  doTyLit :: Name -> TcS LookupInstResult
   doTyLit c = do clas <- tcLookupClass c
                  let p = mkClassPred clas [ t ]
-                 return $ GenInst [p] (\[i] -> EvTypeable
-                                             $ EvTypeableTyLit (EvId i,t)) True
+                 return $ GenInst [p]
+                                  (\[ev] -> EvTypeable t
+                                            $ EvTypeableTyLit $ EvId ev)
+                                  True
 
 {- Note [No Typeable for polytype or for constraints]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
