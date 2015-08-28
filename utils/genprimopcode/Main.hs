@@ -262,6 +262,16 @@ gen_hs_source (Info defaults entries) =
     ++ "-}\n"
     ++ "import GHC.Types (Coercible)\n"
 
+    ++ "import GHC.Tuple ()\n"
+            -- Note [Import GHC.Tuple into GHC.Prim]
+            -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            -- This expresses a dependency on GHC.Tuple, which we need
+            -- to ensure that GHC.Tuple is compiled first.  The generated
+            -- code in this module mentions '()', and that in turn tries
+            -- to ensure that its home module is loaded (for instances I think)
+            -- So it had better be there, when compiling with --make or Haddock.
+            -- It's more kosher anyway to be explicit about the dependency.
+
     ++ "default ()"  -- If we don't say this then the default type include Integer
                      -- so that runs off and loads modules that are not part of
                      -- pacakge ghc-prim at all.  And that in turn somehow ends up
