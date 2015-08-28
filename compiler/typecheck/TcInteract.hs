@@ -23,7 +23,7 @@ import TcType
 import Name
 import PrelNames ( knownNatClassName, knownSymbolClassName,
                    callStackTyConKey, typeableClassName )
-import TysWiredIn ( ipClass, typeNatKind, typeSymbolKind )
+import TysWiredIn ( ipClass )
 import Id( idType )
 import CoAxiom ( Eqn, CoAxiom(..), CoAxBranch(..), fromBranches )
 import Class
@@ -775,7 +775,7 @@ interactGivenIP _ wi = pprPanic "interactGivenIP" (ppr wi)
 -- i.e.   (IP "name" CallStack)
 isCallStackIP :: CtLoc -> Class -> [Type] -> Maybe (EvTerm -> EvCallStack)
 isCallStackIP loc cls tys
-  | cls `hasKey` ipClassNameKey
+  | cls == ipClass
   , [_ip_name, ty] <- tys
   , Just (tc, _) <- splitTyConApp_maybe ty
   , tc `hasKey` callStackTyConKey
@@ -1760,116 +1760,36 @@ instance Outputable LookupInstResult where
     where ss = text $ if s then "[safe]" else "[unsafe]"
 
 
-matchClassInst, match_class_inst
-   :: DynFlags -> InertSet -> Class -> [Type] -> CtLoc -> TcS LookupInstResult
-
+matchClassInst :: DynFlags -> InertSet -> Class -> [Type] -> CtLoc -> TcS LookupInstResult
 matchClassInst dflags inerts clas tys loc
- = do { traceTcS "matchClassInst" $ vcat [ text "pred =" <+> ppr (mkClassPred clas tys) ]
-      ; res <- match_class_inst dflags inerts clas tys loc
-      ; traceTcS "matchClassInst result" $ ppr res
-      ; return res }
-
 -- First check whether there is an in-scope Given that could
 -- match this constraint.  In that case, do not use top-level
 -- instances.  See Note [Instance and Given overlap]
-match_class_inst dflags inerts clas tys loc
   | not (xopt Opt_IncoherentInstances dflags)
   , let matchable_givens = matchableGivens loc pred inerts
   , not (isEmptyBag matchable_givens)
   = do { traceTcS "Delaying instance application" $
-           vcat [ text "Work item=" <+> pprType pred
+           vcat [ text "Work item=" <+> pprClassPred clas tys
                 , text "Potential matching givens:" <+> ppr matchable_givens ]
        ; return NoInstance }
   where
      pred = mkClassPred clas tys
 
-match_class_inst _ _ clas [ ty ] _
-  | className clas == knownNatClassName
-  , Just n <- isNumLitTy ty = makeDict (EvNum n)
+matchClassInst dflags _ clas tys loc
+ = do { traceTcS "matchClassInst" $ vcat [ text "pred =" <+> ppr (mkClassPred clas tys) ]
+      ; res <- match_class_inst dflags clas tys loc
+      ; traceTcS "matchClassInst result" $ ppr res
+      ; return res }
 
-  | className clas == knownSymbolClassName
-  , Just s <- isStrLitTy ty = makeDict (EvStr s)
-
+match_class_inst :: DynFlags -> Class -> [Type] -> CtLoc -> TcS LookupInstResult
+match_class_inst dflags clas tys loc
+  | cls_name == knownNatClassName    = matchKnownNat       clas tys
+  | cls_name == knownSymbolClassName = matchKnownSymbol    clas tys
+  | isCTupleClass clas               = matchCTuple         clas tys
+  | cls_name == typeableClassName    = matchTypeable       clas tys
+  | otherwise                        = matchInstEnv dflags clas tys loc
   where
-  {- This adds a coercion that will convert the literal into a dictionary
-     of the appropriate type.  See Note [KnownNat & KnownSymbol and EvLit]
-     in TcEvidence.  The coercion happens in 2 steps:
-
-     Integer -> SNat n     -- representation of literal to singleton
-     SNat n  -> KnownNat n -- singleton to dictionary
-
-     The process is mirrored for Symbols:
-     String    -> SSymbol n
-     SSymbol n -> KnownSymbol n
-  -}
-  makeDict evLit
-    | Just (_, co_dict) <- tcInstNewTyCon_maybe (classTyCon clas) [ty]
-          -- co_dict :: KnownNat n ~ SNat n
-    , [ meth ]   <- classMethods clas
-    , Just tcRep <- tyConAppTyCon_maybe -- SNat
-                      $ funResultTy         -- SNat n
-                      $ dropForAlls         -- KnownNat n => SNat n
-                      $ idType meth         -- forall n. KnownNat n => SNat n
-    , Just (_, co_rep) <- tcInstNewTyCon_maybe tcRep [ty]
-          -- SNat n ~ Integer
-    , let ev_tm = mkEvCast (EvLit evLit) (mkTcSymCo (mkTcTransCo co_dict co_rep))
-    = return $ GenInst [] (\_ -> ev_tm) True
-
-    | otherwise
-    = panicTcS (text "Unexpected evidence for" <+> ppr (className clas)
-                     $$ vcat (map (ppr . idType) (classMethods clas)))
-
-match_class_inst _ _ clas ts _
-  | isCTupleClass clas
-  , let data_con = tyConSingleDataCon (classTyCon clas)
-        tuple_ev = EvDFunApp (dataConWrapId data_con) ts
-  = return (GenInst ts tuple_ev True)
-            -- The dfun is the data constructor!
-
-match_class_inst _ _ clas [k,t] _
-  | className clas == typeableClassName
-  = matchTypeableClass clas k t
-
-match_class_inst dflags _ clas tys loc
-   = do { instEnvs <- getInstEnvs
-        ; let safeOverlapCheck = safeHaskell dflags `elem` [Sf_Safe, Sf_Trustworthy]
-              (matches, unify, unsafeOverlaps) = lookupInstEnv True instEnvs clas tys
-              safeHaskFail = safeOverlapCheck && not (null unsafeOverlaps)
-        ; case (matches, unify, safeHaskFail) of
-
-            -- Nothing matches
-            ([], _, _)
-                -> do { traceTcS "matchClass not matching" $
-                        vcat [ text "dict" <+> ppr pred ]
-                      ; return NoInstance }
-
-            -- A single match (& no safe haskell failure)
-            ([(ispec, inst_tys)], [], False)
-                -> do   { let dfun_id = instanceDFunId ispec
-                        ; traceTcS "matchClass success" $
-                          vcat [text "dict" <+> ppr pred,
-                                text "witness" <+> ppr dfun_id
-                                               <+> ppr (idType dfun_id) ]
-                                  -- Record that this dfun is needed
-                        ; match_one (null unsafeOverlaps) dfun_id inst_tys }
-
-            -- More than one matches (or Safe Haskell fail!). Defer any
-            -- reactions of a multitude until we learn more about the reagent
-            (matches, _, _)
-                -> do   { traceTcS "matchClass multiple matches, deferring choice" $
-                          vcat [text "dict" <+> ppr pred,
-                                text "matches" <+> ppr matches]
-                        ; return NoInstance } }
-   where
-     pred = mkClassPred clas tys
-
-     match_one :: SafeOverlapping -> DFunId -> [DFunInstType] -> TcS LookupInstResult
-                  -- See Note [DFunInstType: instantiating types] in InstEnv
-     match_one so dfun_id mb_inst_tys
-       = do { checkWellStagedDFun pred dfun_id loc
-            ; (tys, theta) <- instDFunType dfun_id mb_inst_tys
-            ; return $ GenInst theta (EvDFunApp dfun_id tys) so }
-
+    cls_name = className clas
 
 {- Note [Instance and Given overlap]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1935,6 +1855,114 @@ Other notes:
 -}
 
 
+{- *******************************************************************
+*                                                                    *
+                Class lookup in the instance environment
+*                                                                    *
+**********************************************************************-}
+
+matchInstEnv :: DynFlags -> Class -> [Type] -> CtLoc -> TcS LookupInstResult
+matchInstEnv dflags clas tys loc
+   = do { instEnvs <- getInstEnvs
+        ; let safeOverlapCheck = safeHaskell dflags `elem` [Sf_Safe, Sf_Trustworthy]
+              (matches, unify, unsafeOverlaps) = lookupInstEnv True instEnvs clas tys
+              safeHaskFail = safeOverlapCheck && not (null unsafeOverlaps)
+        ; case (matches, unify, safeHaskFail) of
+
+            -- Nothing matches
+            ([], _, _)
+                -> do { traceTcS "matchClass not matching" $
+                        vcat [ text "dict" <+> ppr pred ]
+                      ; return NoInstance }
+
+            -- A single match (& no safe haskell failure)
+            ([(ispec, inst_tys)], [], False)
+                -> do   { let dfun_id = instanceDFunId ispec
+                        ; traceTcS "matchClass success" $
+                          vcat [text "dict" <+> ppr pred,
+                                text "witness" <+> ppr dfun_id
+                                               <+> ppr (idType dfun_id) ]
+                                  -- Record that this dfun is needed
+                        ; match_one (null unsafeOverlaps) dfun_id inst_tys }
+
+            -- More than one matches (or Safe Haskell fail!). Defer any
+            -- reactions of a multitude until we learn more about the reagent
+            (matches, _, _)
+                -> do   { traceTcS "matchClass multiple matches, deferring choice" $
+                          vcat [text "dict" <+> ppr pred,
+                                text "matches" <+> ppr matches]
+                        ; return NoInstance } }
+   where
+     pred = mkClassPred clas tys
+
+     match_one :: SafeOverlapping -> DFunId -> [DFunInstType] -> TcS LookupInstResult
+                  -- See Note [DFunInstType: instantiating types] in InstEnv
+     match_one so dfun_id mb_inst_tys
+       = do { checkWellStagedDFun pred dfun_id loc
+            ; (tys, theta) <- instDFunType dfun_id mb_inst_tys
+            ; return $ GenInst theta (EvDFunApp dfun_id tys) so }
+
+
+{- ********************************************************************
+*                                                                     *
+                   Class lookup for CTuples
+*                                                                     *
+***********************************************************************-}
+
+matchCTuple :: Class -> [Type] -> TcS LookupInstResult
+matchCTuple clas tys   -- (isCTupleClass clas) holds
+  = return (GenInst tys tuple_ev True)
+            -- The dfun *is* the data constructor!
+  where
+     data_con = tyConSingleDataCon (classTyCon clas)
+     tuple_ev = EvDFunApp (dataConWrapId data_con) tys
+
+{- ********************************************************************
+*                                                                     *
+                   Class lookup for Literals
+*                                                                     *
+***********************************************************************-}
+
+matchKnownNat :: Class -> [Type] -> TcS LookupInstResult
+matchKnownNat clas [ty]     -- clas = KnownNat
+  | Just n <- isNumLitTy ty = makeLitDict clas ty (EvNum n)
+matchKnownNat _ _        = return NoInstance
+
+matchKnownSymbol :: Class -> [Type] -> TcS LookupInstResult
+matchKnownSymbol clas [ty]  -- clas = KnownSymbol
+  | Just n <- isStrLitTy ty = makeLitDict clas ty (EvStr n)
+matchKnownSymbol _ _     = return NoInstance
+
+
+makeLitDict :: Class -> Type -> EvLit -> TcS LookupInstResult
+-- makeLitDict adds a coercion that will convert the literal into a dictionary
+-- of the appropriate type.  See Note [KnownNat & KnownSymbol and EvLit]
+-- in TcEvidence.  The coercion happens in 2 steps:
+--
+--     Integer -> SNat n     -- representation of literal to singleton
+--     SNat n  -> KnownNat n -- singleton to dictionary
+--
+--     The process is mirrored for Symbols:
+--     String    -> SSymbol n
+--     SSymbol n -> KnownSymbol n -}
+makeLitDict clas ty evLit
+    | Just (_, co_dict) <- tcInstNewTyCon_maybe (classTyCon clas) [ty]
+          -- co_dict :: KnownNat n ~ SNat n
+    , [ meth ]   <- classMethods clas
+    , Just tcRep <- tyConAppTyCon_maybe -- SNat
+                      $ funResultTy         -- SNat n
+                      $ dropForAlls         -- KnownNat n => SNat n
+                      $ idType meth         -- forall n. KnownNat n => SNat n
+    , Just (_, co_rep) <- tcInstNewTyCon_maybe tcRep [ty]
+          -- SNat n ~ Integer
+    , let ev_tm = mkEvCast (EvLit evLit) (mkTcSymCo (mkTcTransCo co_dict co_rep))
+    = return $ GenInst [] (\_ -> ev_tm) True
+
+    | otherwise
+    = panicTcS (text "Unexpected evidence for" <+> ppr (className clas)
+                     $$ vcat (map (ppr . idType) (classMethods clas)))
+
+
 {- ********************************************************************
 *                                                                     *
                    Class lookup for Typeable
@@ -1943,62 +1971,65 @@ Other notes:
 
 -- | Assumes that we've checked that this is the 'Typeable' class,
 -- and it was applied to the correct argument.
-matchTypeableClass :: Class -> Kind -> Type -> TcS LookupInstResult
-matchTypeableClass clas k t
+matchTypeable :: Class -> [Type] -> TcS LookupInstResult
+matchTypeable clas [k,t]  -- clas = Typeable
   | isForAllTy k                            = return NoInstance
   | isConstraintKind k                      = return NoInstance
-  | Just _ <- isNumLitTy t                  = doTyLit knownNatClassName
-  | Just _ <- isStrLitTy t                  = doTyLit knownSymbolClassName
-  | Just (tc, kts) <- splitTyConApp_maybe t = doTyConApp tc kts
-  | Just (f,kt)   <- splitAppTy_maybe t     = doTyApp f kt
+  | Just _ <- isNumLitTy t                  = doTyLit knownNatClassName    t
+  | Just _ <- isStrLitTy t                  = doTyLit knownSymbolClassName t
+  | Just (tc, kts) <- splitTyConApp_maybe t = doTyConApp clas t tc kts
+  | Just (f,kt)   <- splitAppTy_maybe t     = doTyApp    clas t f kt
   | otherwise                               = return NoInstance
+matchTypeable _ _ = return NoInstance  -- Ill-kinded, so should not happen
+
+doTyConApp :: Class -> Type -> TyCon -> [KindOrType] -> TcS LookupInstResult
+-- Representation for type constructor applied to some kinds
+doTyConApp clas ty tc kts
+  | (ks, ts) <- splitTyConArgs tc kts
+  , all is_ground_kind ks
+  = return $ GenInst (map (mk_typeable_pred clas) ts)
+                     (\tReps -> EvTypeable ty $ EvTypeableTyCon
+                                (map EvId tReps))
+                     True
+  | otherwise
+  = return NoInstance
+
   where
-  -- Representation for type constructor applied to some kinds
-  doTyConApp :: TyCon -> [KindOrType] -> TcS LookupInstResult
-  doTyConApp tc kts
-    | (ks, ts) <- splitTyConArgs tc kts
-    , all is_ground_kind ks
-    = return $ GenInst (map mk_typeable_pred ts)
-                       (\tReps -> EvTypeable t $ EvTypeableTyCon
-                                  (map EvId tReps))
-                       True
-    | otherwise
-    = return NoInstance
-
-  {- Representation for an application of a type to a type-or-kind.
-  This may happen when the type expression starts with a type variable.
-  Example (ignoring kind parameter):
-    Typeable (f Int Char)                      -->
-    (Typeable (f Int), Typeable Char)          -->
-    (Typeable f, Typeable Int, Typeable Char)  --> (after some simp. steps)
-    Typeable f
-  -}
-  doTyApp :: Type -> KindOrType -> TcS LookupInstResult
-  doTyApp f tk
-    | isKind tk
-    = return NoInstance -- We can't solve until we know the ctr.
-    | otherwise
-    = return $ GenInst [mk_typeable_pred f, mk_typeable_pred tk]
-                       (\[t1,t2] -> EvTypeable t $ EvTypeableTyApp (EvId t1) (EvId t2))
-                       True
-
-  -- Representation for concrete kinds.  We just use the kind itself,
-  -- but first check to make sure that it is "simple" (i.e., made entirely
-  -- out of kind constructors).
+    -- Representation for concrete kinds.  We just use the kind itself,
+    -- but first check to make sure that it is "simple" (i.e., made entirely
+    -- out of kind constructors).
   is_ground_kind k
     | Just (_, ks) <- splitTyConApp_maybe k
     = all is_ground_kind ks
     | otherwise
     = False
 
-  -- Emit a `Typeable` constraint for the given type.
-  mk_typeable_pred ty = mkClassPred clas [ typeKind ty, ty ]
+
+doTyApp :: Class -> Type -> Type -> KindOrType -> TcS LookupInstResult
+-- Representation for an application of a type to a type-or-kind.
+--  This may happen when the type expression starts with a type variable.
+--  Example (ignoring kind parameter):
+--    Typeable (f Int Char)                      -->
+--    (Typeable (f Int), Typeable Char)          -->
+--    (Typeable f, Typeable Int, Typeable Char)  --> (after some simp. steps)
+--    Typeable f
+doTyApp clas ty f tk
+  | isKind tk
+  = return NoInstance -- We can't solve until we know the ctr.
+  | otherwise
+  = return $ GenInst [mk_typeable_pred clas f, mk_typeable_pred clas tk]
+                     (\[t1,t2] -> EvTypeable ty $ EvTypeableTyApp (EvId t1) (EvId t2))
+                     True
+
+-- Emit a `Typeable` constraint for the given type.
+mk_typeable_pred :: Class -> Type -> PredType
+mk_typeable_pred clas ty = mkClassPred clas [ typeKind ty, ty ]
 
   -- Typeable is implied by KnownNat/KnownSymbol. In the case of a type literal
   -- we generate a sub-goal for the appropriate class. See #10348 for what
   -- happens when we fail to do this.
-  doTyLit :: Name -> TcS LookupInstResult
-  doTyLit c = do clas <- tcLookupClass c
+doTyLit :: Name -> Type -> TcS LookupInstResult
+doTyLit c t = do clas <- tcLookupClass c
                  let p = mkClassPred clas [ t ]
                  return $ GenInst [p]
                                   (\[ev] -> EvTypeable t
