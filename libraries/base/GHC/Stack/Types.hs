@@ -23,6 +23,10 @@ module GHC.Stack.Types (
 
 import GHC.Types
 
+-- Make implicit dependency known to build system
+import GHC.Tuple ()
+import GHC.Integer ()
+
 ----------------------------------------------------------------------
 -- Explicit call-stacks built via ImplicitParams
 ----------------------------------------------------------------------
