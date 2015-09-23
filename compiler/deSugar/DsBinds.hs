@@ -44,7 +44,6 @@ import TyCon
 import TcEvidence
 import TcType
 import Type
-import Kind (returnsConstraintKind)
 import Coercion hiding (substCo)
 import TysWiredIn ( eqBoxDataCon, coercibleDataCon, mkListTy
                   , mkBoxedTupleTy, charTy )

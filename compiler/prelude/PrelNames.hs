@@ -206,6 +206,10 @@ basicKnownKeyNames
         -- Typeable
         typeableClassName,
         typeRepTyConName,
+        trTyConDataConName,
+        trModuleDataConName,
+        trNameSDataConName,
+        typeRepIdName,
         mkPolyTyConAppName,
         mkAppTyName,
         typeLitTypeRepName,

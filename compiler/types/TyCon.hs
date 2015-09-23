@@ -13,7 +13,7 @@ module TyCon(
         TyCon, FieldLabel,
 
         AlgTyConRhs(..), visibleDataCons,
-        TyConParent(..), isNoParent,
+        AlgTyConFlav(..), isNoParent,
         FamTyConFlav(..), Role(..), Promoted(..), Injectivity(..),
 
         -- ** Constructing TyCons
@@ -514,7 +514,7 @@ data TyCon
                                       -- abstract, built-in. See comments for
                                       -- FamTyConFlav
 
-        famTcParent  :: Maybe Class   -- ^ For *associated* type/data families
+        famTcParent  :: Maybe Class,  -- ^ For *associated* type/data families
                                       -- The class in whose declaration the family is declared
                                       -- See Note [Associated families and their parent class]
 
@@ -565,7 +565,8 @@ data TyCon
         tyConArity  :: Arity,
         tyConKind   :: Kind,   -- ^ Translated type of the data constructor
         tcRoles     :: [Role], -- ^ Roles: N for kind vars, R for type vars
-        dataCon     :: DataCon -- ^ Corresponding data constructor
+        dataCon     :: DataCon,-- ^ Corresponding data constructor
+        tcRepName   :: TyConRepName
     }
 
   -- | Represents promoted type constructor.

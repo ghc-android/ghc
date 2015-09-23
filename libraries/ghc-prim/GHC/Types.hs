@@ -1,5 +1,5 @@
 {-# LANGUAGE MagicHash, NoImplicitPrelude, TypeFamilies, UnboxedTuples,
-             MultiParamTypeClasses, RoleAnnotations #-}
+             MultiParamTypeClasses, RoleAnnotations, CPP #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  GHC.Types
@@ -34,7 +34,6 @@ module GHC.Types (
     ) where
 
 import GHC.Prim
-import GHC.Tuple ()
 
 infixr 5 :
 

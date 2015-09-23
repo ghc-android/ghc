@@ -53,13 +53,14 @@ import Module
 import SrcLoc
 import Fingerprint
 import Binary
-import BooleanFormula ( BooleanFormula )
+import BooleanFormula ( BooleanFormula, pprBooleanFormula, isTrue )
 import HsBinds
-import TyCon (Role (..))
+import TyCon (Role (..), Injectivity(..) )
 import StaticFlags (opt_PprStyle_Debug)
-import Util( filterOut )
+import Util( filterOut, filterByList )
 import InstEnv
 import DataCon (SrcStrictness(..), SrcUnpackedness(..))
+import Lexeme (isLexSym)
 
 import Control.Monad
 import System.IO.Unsafe
@@ -113,9 +114,13 @@ data IfaceDecl
 
   | IfaceFamily  { ifName    :: IfaceTopBndr,      -- Type constructor
                    ifTyVars  :: [IfaceTvBndr],     -- Type variables
+                   ifResVar  :: Maybe IfLclName,   -- Result variable name, used
+                                                   -- only for pretty-printing
+                                                   -- with --show-iface
                    ifFamKind :: IfaceKind,         -- Kind of the *rhs* (not of
                                                    -- the tycon)
-                   ifFamFlav :: IfaceFamTyConFlav }
+                   ifFamFlav :: IfaceFamTyConFlav,
+                   ifFamInj  :: Injectivity }      -- injectivity information
 
   | IfaceClass { ifCtxt    :: IfaceContext,             -- Superclasses
                  ifName    :: IfaceTopBndr,             -- Name of the class TyCon
@@ -697,15 +702,15 @@ pprIfaceDecl ss (IfaceSynonym { ifName   = tc
     (tvs, theta, tau) = splitIfaceSigmaTy mono_ty
 
 pprIfaceDecl ss (IfaceFamily { ifName = tycon, ifTyVars = tyvars
-                             , ifFamFlav = rhs, ifFamKind = kind })
+                             , ifFamFlav = rhs, ifFamKind = kind
+                             , ifResVar = res_var, ifFamInj = inj })
   | IfaceDataFamilyTyCon <- rhs
   = ptext (sLit "data family") <+> pprIfaceDeclHead [] ss tycon tyvars
 
   | otherwise
   = vcat [ hang (ptext (sLit "type family")
                  <+> pprIfaceDeclHead [] ss tycon tyvars)
-              2 (dcolon <+> ppr kind
-                 <+> pp_inj res_var inj <+> ppShowRhs ss (pp_rhs rhs))
+              2 (pp_inj res_var inj <+> ppShowRhs ss (pp_rhs rhs))
          , ppShowRhs ss (nest 2 (pp_branches rhs)) ]
   where
     pp_inj Nothing    _   = dcolon <+> ppr kind
@@ -1130,12 +1135,13 @@ freeNamesIfIdDetails _                 = emptyNameSet
 
 -- All other changes are handled via the version info on the tycon
 freeNamesIfFamFlav :: IfaceFamTyConFlav -> NameSet
-freeNamesIfFamFlav IfaceOpenSynFamilyTyCon           = emptyNameSet
+freeNamesIfFamFlav IfaceOpenSynFamilyTyCon             = emptyNameSet
+freeNamesIfFamFlav IfaceDataFamilyTyCon                = emptyNameSet
 freeNamesIfFamFlav (IfaceClosedSynFamilyTyCon (Just (ax, br)))
   = unitNameSet ax &&& fnList freeNamesIfAxBranch br
 freeNamesIfFamFlav (IfaceClosedSynFamilyTyCon Nothing) = emptyNameSet
-freeNamesIfFamFlav IfaceAbstractClosedSynFamilyTyCon = emptyNameSet
-freeNamesIfFamFlav IfaceBuiltInSynFamTyCon = emptyNameSet
+freeNamesIfFamFlav IfaceAbstractClosedSynFamilyTyCon   = emptyNameSet
+freeNamesIfFamFlav IfaceBuiltInSynFamTyCon             = emptyNameSet
 
 freeNamesIfContext :: IfaceContext -> NameSet
 freeNamesIfContext = fnList freeNamesIfType

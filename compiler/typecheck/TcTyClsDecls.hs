@@ -34,8 +34,8 @@ import TcHsType
 import TcMType
 import TcType
 import FamInst
-import FamInstEnv( isDominatedBy, mkCoAxBranch, mkBranchedCoAxiom )
-import Coercion( pprCoAxBranch, ltRole )
+import FamInstEnv( mkCoAxBranch, mkBranchedCoAxiom )
+import Coercion( ltRole )
 import Type
 import TypeRep   -- for checkValidRoles
 import Kind
@@ -669,7 +669,9 @@ tcFdTyVar (L _ name)
 
 tcFamDecl1 :: Maybe Class -> FamilyDecl Name -> TcM [TyThing]
 tcFamDecl1 parent
-            (FamilyDecl {fdInfo = OpenTypeFamily, fdLName = L _ tc_name, fdTyVars = tvs})
+            (FamilyDecl { fdInfo = OpenTypeFamily, fdLName = L _ tc_name
+                        , fdTyVars = tvs, fdResultSig = L _ sig
+                        , fdInjectivityAnn = inj })
   = tcTyClTyVars tc_name tvs $ \ tvs' kind -> do
   { traceTc "open type family:" (ppr tc_name)
   ; checkFamFlag tc_name
@@ -736,7 +738,9 @@ tcFamDecl1 parent
 -- the tycon. Exception: checking equations overlap done by dropDominatedAxioms
 
 tcFamDecl1 parent
-           (FamilyDecl {fdInfo = DataFamily, fdLName = L _ tc_name, fdTyVars = tvs})
+           (FamilyDecl { fdInfo = DataFamily
+                       , fdLName = L _ tc_name, fdTyVars = tvs
+                       , fdResultSig = L _ sig })
   = tcTyClTyVars tc_name tvs $ \ tvs' kind -> do
   { traceTc "data family:" (ppr tc_name)
   ; checkFamFlag tc_name
@@ -744,9 +748,11 @@ tcFamDecl1 parent
   ; tc_rep_name <- newTyConRepName tc_name
   ; let final_tvs = tvs' ++ extra_tvs    -- we may not need these
         tycon = buildFamilyTyCon tc_name final_tvs
+                                 (resultVariableName sig)
                                  (DataFamilyTyCon tc_rep_name)
                                  liftedTypeKind -- RHS kind
                                  parent
+                                 NotInjective
   ; return [ATyCon tycon] }
 
 -- | Maybe return a list of Bools that say whether a type family was declared

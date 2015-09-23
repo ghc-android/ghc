@@ -60,7 +60,7 @@ buildFamilyTyCon :: Name         -- ^ Type family name
                  -> Maybe Name   -- ^ Result variable name
                  -> FamTyConFlav -- ^ Open, closed or in a boot file?
                  -> Kind         -- ^ Kind of the RHS
-                 -> TyConParent  -- ^ Parent, if exists
+                 -> Maybe Class  -- ^ Parent, if exists
                  -> Injectivity  -- ^ Injectivity annotation
                                  -- See [Injectivity annotation] in HsDecls
                  -> TyCon
@@ -368,3 +368,12 @@ newImplicitBinder base_name mk_sys_occ
   where
     occ = mk_sys_occ (nameOccName base_name)
     loc = nameSrcSpan base_name
+
+-- | Make the 'TyConRepName' for this 'TyCon'
+newTyConRepName :: Name -> TcRnIf gbl lcl TyConRepName
+newTyConRepName tc_name
+  | Just mod <- nameModule_maybe tc_name
+  , (mod, occ) <- tyConRepModOcc mod (nameOccName tc_name)
+  = newGlobalBinder mod occ noSrcSpan
+  | otherwise
+  = newImplicitBinder tc_name mkTyConRepUserOcc
