@@ -3,10 +3,10 @@ holes2.hs:3:5: warning:
     No instance for (Show a0) arising from a use of ‘show’
     The type variable ‘a0’ is ambiguous
     Potential instances:
+      instance Show Module -- Defined in ‘GHC.Show’
       instance Show Ordering -- Defined in ‘GHC.Show’
-      instance Show Integer -- Defined in ‘GHC.Show’
-      instance Show a => Show (Maybe a) -- Defined in ‘GHC.Show’
-      ...plus 22 others
+      instance Show TrName -- Defined in ‘GHC.Show’
+      ...plus 25 others
       (use -fprint-potential-instances to see them all)
     In the expression: show _
     In an equation for ‘f’: f = show _

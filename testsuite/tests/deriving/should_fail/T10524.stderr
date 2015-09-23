@@ -1,9 +1,8 @@
 
 T10524.hs:7:58: error:
-    No instance for (Typeable WrappedFunctor)
+    No instance for (Typeable (WrappedFunctor f a))
       arising from the 'deriving' clause of a data type declaration
-      GHC can't yet do polykinded
-        Typeable (WrappedFunctor :: (k -> *) -> k -> *)
+      GHC can't yet do polykinded Typeable (WrappedFunctor f a :: *)
     Possible fix:
       use a standalone 'deriving instance' declaration,
         so you can specify the instance context yourself
