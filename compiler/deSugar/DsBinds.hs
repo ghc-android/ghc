@@ -945,7 +945,7 @@ ds_ev_typeable ty (EvTypeableTyLit _)
               -- typeLitTypeRep :: String -> TypeRep
        -- ; let finst = mkTyApps (Var ctr) [ty]
              -- proxy = mkTyApps (Var proxyHashId) [typeKind ty, ty]
-       ; tag <- mkStringExpr str
+       ; let tag = Lit $ MachStr $ fastStringToByteString $ mkFastString str
        ; return (mkApps (Var ctr) [tag]) }
   where
     str
